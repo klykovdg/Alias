@@ -1,7 +1,10 @@
 from tools.cross import get_cross_coord
+from tools.wordbase import get_words
+from app.team import Team
 
 from tkinter import *
-import os
+import os, random
+from multiprocessing import Process, Manager
 
 
 PICTURE = './resources/alias_img.png'
@@ -10,11 +13,17 @@ MAIN_BG = '#395C6B'
 BUTTON_BG = '#FFE156'
 BUTTON_BG_UNDER_MOUSE = '#DFFFFD'
 FONT = ('Roman', 14, 'normal')
+TIMER_BG = '#fa574b'
+TIMER_FONT = ('Roman', 16, 'normal')
 
 
 def alias():
+        words_base = Manager().list()
+        word_base_conaction = Process(target=get_words, args=(words_base,))
+        word_base_conaction.start()
+
         root = Tk()
-        main_win = MainWindow(root)
+        main_win = MainWindow(root, word_base_conaction, words_base)
         path = os.path.abspath(PICTURE)
         img = PhotoImage(file=path)  # maybe bug of tkinter
         width = img.width()
@@ -49,8 +58,10 @@ class Window:
 
 
 class MainWindow(Window):
-    def __init__(self, root):
+    def __init__(self, root, word_base_conaction, words_base):
         Window.__init__(self, root)
+        self.word_base_conaction = word_base_conaction
+        self.words_base = words_base
         self.alias_label = None
         self.buttons = [
             ('ADD WORDS', AddWords(root, self).render),
@@ -83,6 +94,7 @@ class MainWindow(Window):
         self.alias_label.pack()
 
     def root_config(self, width):
+        self.root.title('Alias Game')
         self.place_window(width + 60, 470)
         self.root.resizable(False, False)
         self.root.config(bg=MAIN_BG)
@@ -203,16 +215,19 @@ class Adder:
         self.increment = 33
         self.start_entry_text = 'Type here'
         self.error_entry_text = 'Input a number'
-        self.var_config()
         self.canvas = None
         self.scrollbar = None
         self.canvas_height = canvas_height
+        self.var_config()
+
 
     def var_config(self):
         # TODO more adequate computations
         self.ent_x, self.ent_y = 172, 13  # 122 13
         self.cross_x1, self.cross_y1, self.cross_x2, self.cross_y2 = 0, 40, 30, 70
         self.scrollbar_is_packed = False
+        if self.canvas:
+            self.canvas.config(scrollregion=(0, 0, self.canvas.winfo_reqwidth(), self.canvas.winfo_reqheight()))
 
     def create_canvas_scrollbar(self, fr):
         scroll = Scrollbar(fr)
@@ -248,6 +263,7 @@ class Adder:
                 self.root.bind("<Button-4>", lambda event: can.yview_scroll(-1, "units"))
                 self.root.bind("<Button-5>", lambda event: can.yview_scroll(1, "units"))
             can.config(scrollregion=(0, 0, 300, self.cross_y2 + self.increment))
+            can.yview_scroll(self.increment, "units")
         self.ent_y += self.increment
         self.cross_y1 += self.increment
         self.cross_y2 += self.increment
@@ -270,6 +286,7 @@ class Adder:
                 ent.config(fg='black')
         ent.bind('<1>', ent_handler)
 
+
     def create_cross(self):
         # TODO there is no possibility to minus if we want decrease the amount of entries
         id = self.canvas.create_polygon(*get_cross_coord(self.cross_x1, self.cross_y1,
@@ -285,7 +302,6 @@ class Adder:
             child.destroy()
         self.var_config()
         # may be it is worth to up the down
-        self.canvas.config(scrollregion=(0, 0, self.canvas.winfo_reqwidth(), self.canvas.winfo_reqheight()))
         self.entries.clear()
 
 
@@ -359,20 +375,12 @@ class Play(Window):
         self.main_win.render_widgets()
 
     def start_play(self):
-        game_settings = self.process_settings()
+        game_settings = self.settings.process_settings()
         self.adder.back_to_init_state()
         self.erase_widgets(self.widgets)
         self.settings.set_var_init_state()
         self.settings.pages_widgets.clear()
-        Game(self.root, game_settings).start()
-
-    def process_settings(self):
-        # TODO possibly it should create new Team obj immediately
-        game_settings = []
-        for list_of_ents in self.settings.pages_widgets:
-            game_settings.append([ent.get() for ent in list_of_ents])
-
-        return game_settings
+        Game(self.root, self.main_win, game_settings).start()
 
 
 class Settings:
@@ -428,6 +436,16 @@ class Settings:
                     ent.config(fg='red')
                     raise
 
+    def process_settings(self):
+        # TODO possibly it should create new Team obj immediately
+        arr = self.pages_widgets
+        game_settings = []
+        game_settings.append([Team(ent.get()) for ent in arr[0]])
+        for i in range(1, len(arr)):
+            game_settings.append(arr[i][0].get())
+
+        return game_settings
+
 
 class Game:
     """
@@ -446,39 +464,219 @@ class Game:
     If round is completed and there are several team whoes points are more than
     win-score then the winner is a team with the biggest amount of points
     """
-    def __init__(self, root, settings):
+    def __init__(self, root, main_win: MainWindow, settings):
         self.root = root
-        self.settings = settings
+        self.main_win = main_win
+        self.teams = settings[0]
+        self.cur_team = 0
+        self.num_round = 1
+        self.duration = int(settings[1])
+        self.win_score = int(settings[2])
+        self.widgets = []
+        self.scrollbar_is_packed = False
+        print(settings)
 
     def start(self):
-        fr = Frame(self.root)
+        self.make_widgets()
+        self.main_win.word_base_conaction.join()
+        self.new_game()
+
+    def make_widgets(self):
+        # TODO make menu for user can open rules during the game
+        fr = Frame(self.root, name='fr')
         fr.pack(padx=(30, 30), pady=(10, 10))
+        scrollbar = Scrollbar(fr)
         canvas = Canvas(fr)
-        canvas.config(highlightthickness=0, bg='white',
-                           highlightbackground=MAIN_BG,
-                           height=200, width=330)
-        canvas.pack()
-        bt1 = Button(self.root, text='left', bg=BUTTON_BG, width=10)
-        bt1.pack(side=LEFT, padx=(30, 0))
-        self.bt_conf(bt1)
-        Label(self.root, text=str(self.settings[1][0]), width=10, height=2).pack(side=LEFT, padx=(10, 10))
-        bt2 = Button(self.root, text='right', bg=BUTTON_BG, width=10)
-        bt2.pack(side=RIGHT, padx=(0, 30))
-        self.bt_conf(bt2)
+        canvas.config(highlightthickness=0, bg=MAIN_BG,
+                      highlightbackground=MAIN_BG,
+                      height=200, width=330)
+        scrollbar.config(command=canvas.yview)
+        canvas.config(yscrollcommand=scrollbar.set)
+        canvas.pack(side=LEFT)
+        left_bt = Button(self.root)
+        left_bt.pack(anchor=SW, padx=(30, 0), side=LEFT)
+        self.bt_conf(left_bt)
+
+        right_bt = Button(self.root)
+        right_bt.pack(anchor=SE, padx=(0, 30), side=RIGHT)
+        self.bt_conf(right_bt)
+
+        timer = Label(self.root, text=str(self.duration), width=10, height=4,
+                      bg=TIMER_BG, font=TIMER_FONT, fg='white')
+        timer.pack(anchor=S, side=BOTTOM)
+
+        self.timer = timer
+        self.left_bt = left_bt
+        self.right_bt = right_bt
+        self.canvas = canvas
+        self.scrollbar = scrollbar
+        self.widgets.extend([fr, canvas, scrollbar, left_bt, right_bt, timer])
+
+    def new_game(self):
+        self.return_init_state()
+        self.round_start_win(self.num_round, self.teams[self.cur_team])
+
+    def return_init_state(self):
+        self.canvas.delete(ALL)
+        for team in self.teams:
+            team.reset_score_to_zero()
+        self.num_round = 1
+        self.cur_team = 0
+        # it's not possible to have more than 10K words, be careful
+        self.cur_game_words_base = self.main_win.words_base[:]
+
+    def round_start_win(self, number, team):
+        y = 1
+        y = self.create_text('Score table', y, 25, 25)
+        y = self.print_cur_score_table(y) + 10
+        y = self.create_text('Round %d' % number, y, 10, 25)
+        y = self.create_text('\nTeam %s! Are you ready?' % team.name, y, 25, 25)
+
+        self.left_bt.config(text='Quit', command=self.back_to_main_menu)
+        self.right_bt.config(text='Yes', command=self.yes)
+
+    def yes(self):
+        self.left_bt.config(text='Skip', command=self.skip)
+        self.right_bt.config(text='Guessed', command=self.guessed)
+        self.canvas.delete(ALL)
+        self.display_word()
+        self.play(self.duration)
+
+    def skip(self):
+        team = self.teams[self.cur_team]
+        team.down()
+        self.canvas.delete(ALL)
+        self.display_word()
+
+    def guessed(self):
+        team = self.teams[self.cur_team]
+        team.up()
+        self.canvas.delete(ALL)
+        self.display_word()
+
+    def display_word(self):
+        # TODO solve case if the words are over
+        # TODO bad decor of the card from my point of view
+        team = self.teams[self.cur_team]
+        self.create_text('Score %d' % team.score, 1, 1, 1)
+        index = random.randint(0, len(self.cur_game_words_base) - 1)
+        word = self.cur_game_words_base.pop(index)
+        width = self.get_card_width(word)
+        card = Frame(self.canvas, bg=BUTTON_BG)
+        word_on_card = Label(card, text=word, bg=MAIN_BG, fg=BUTTON_BG,
+                             width=width, height=4, font=TIMER_FONT, bd=0)
+        word_on_card.pack(side=TOP, padx=2, pady=2)
+        self.canvas.create_window(self.canvas.winfo_reqwidth() // 2,
+                                  self.canvas.winfo_reqheight() // 2,
+                                  window=card)
+
+    def get_card_width(self, word):
+        sides_space = 6
+        default_len = 12
+        if len(word) > default_len:
+            return len(word) + sides_space
+        else:
+            return default_len + sides_space
+
+    def play(self, remainder):
+        if remainder > 3:
+            self.timer.config(text=remainder)
+            self.canvas.after(1000, self.play, remainder - 1)
+        elif remainder == 0:
+            self.end_for_cur_team()
+        else:
+            self.timer.config(text=remainder, bg=BUTTON_BG_UNDER_MOUSE, fg=TIMER_BG)
+            self.timer.bell()
+            self.canvas.after(500, self.timer.config, {'bg': TIMER_BG, 'fg': 'white'})
+            self.canvas.after(1000, self.play, remainder - 1)
+
+    def end_for_cur_team(self):
+        self.update_round_and_cur_team()
+        self.timer.config(text=self.duration)
+        if self.cur_team == 0:
+            self.end_of_round()
+        else:
+            self.canvas.delete(ALL)
+            self.round_start_win(self.num_round, self.teams[self.cur_team])
+
+    def end_of_round(self):
+        leaders = self.get_leading_score()
+        # if several teams have equal score exceeding win-score the game continue
+        if len(leaders) == 1 and leaders[0].score >= self.win_score:
+            self.congratulations(leaders[0])
+        else:
+            self.canvas.delete(ALL)
+            self.round_start_win(self.num_round, self.teams[self.cur_team])
+
+    def congratulations(self, team):
+        # TODO I like idea with firework
+        self.canvas.delete(ALL)
+        y = 1
+        y = self.create_text('Score table', y, 25, 25)
+        y = self.print_cur_score_table(y) + 10
+        y = self.create_text('Congratulations %s!' % team.name, y, 25, 25)
+        y = self.create_text('You are winner!', y, 10, 25)
+
+        self.left_bt.config(text='Quit', command=self.back_to_main_menu)
+        self.right_bt.config(text='New', command=self.new_game)
 
     def bt_conf(self, bt, width=5):
         bt.config(width=width, height=2)
         bt.config(bg=BUTTON_BG, font=FONT)
         bt.config(relief=SUNKEN)
         bt.config(activebackground=BUTTON_BG_UNDER_MOUSE)
-# h = self.adder.canvas.winfo_reqheight()
-# w = self.adder.canvas.winfo_reqwidth()
-# self.adder.canvas.delete('all')
-# self.adder.canvas.create_text(w // 2, h // 2, text='Are you ready to start the game?',
-#                               fill=BUTTON_BG, font=FONT)
-# label = self.widgets[1]
-# label.config(text='')
-# no = self.widgets[-2]
-# yes = self.widgets[-1]
-# no.config(text='No', command=self.back_to_main_win)
-# yes.config(text='Yes', command=None)
+
+    def get_leading_score(self):
+        leading_score = 0
+        leaders = []  # in case when several teams have the same score which more than win-score
+        for team in self.teams:
+            if leading_score < team.score:
+                leading_score = team.score
+                leaders.clear()
+                leaders.append(team)
+            elif leading_score == team.score:
+                leaders.append(team)
+
+        return leaders
+
+    def create_text(self, text, y, incr, line_y_size):
+        self.canvas.create_text(self.canvas.winfo_reqwidth() // 2, y, anchor=N,
+                                text=text, fill=BUTTON_BG, font=FONT)
+        y += incr
+        self.check_canvas_height_and_cur_y(y, line_y_size)
+
+        return y
+
+    def print_cur_score_table(self, y):
+        font = ('Roman', 12, 'normal')
+        data = [(team.name, team.score) for team in self.teams]
+        for n, s in data:
+            fr = Frame(self.canvas, bg=MAIN_BG)
+            fr.pack()
+            Label(fr, text=n, width=15, font=font, bg=MAIN_BG, fg=BUTTON_BG, anchor=W).pack(side=LEFT)
+            Label(fr, text=s, width=3, font=font, bg=MAIN_BG, fg=BUTTON_BG).pack(side=RIGHT)
+            self.canvas.create_window(self.canvas.winfo_reqwidth() // 2, y, anchor=N, window=fr)
+            y += 20
+            self.check_canvas_height_and_cur_y(y, 20)
+        return y
+
+    def check_canvas_height_and_cur_y(self, y, incr):
+        if y > self.canvas.winfo_reqheight():
+            if not self.scrollbar_is_packed:
+                self.scrollbar.pack(side=RIGHT, fill=Y)
+                self.root.bind("<Button-4>", lambda event: self.canvas.yview_scroll(-1, "units"))
+                self.root.bind("<Button-5>", lambda event: self.canvas.yview_scroll(1, "units"))
+                self.scrollbar_is_packed = True
+            self.canvas.config(scrollregion=(0, 0, self.canvas.winfo_reqwidth(), y + incr))
+
+    def update_round_and_cur_team(self):
+        if (self.cur_team + 1) == len(self.teams):
+            self.num_round += 1
+            self.cur_team = (self.cur_team + 1) % len(self.teams)
+        else:
+            self.cur_team += 1
+
+    def back_to_main_menu(self):
+        for widget in self.widgets:
+            widget.destroy()
+        self.main_win.render_widgets()
